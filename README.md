@@ -17,3 +17,7 @@ Open [http://localhost:3000](http://localhost:3000).
 - TypeScript
 - Custom responsive CSS
 - Lucide icons
+
+## Deployment
+
+Deployed with Vercel from the `main` branch.
