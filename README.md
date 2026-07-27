@@ -20,4 +20,4 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Deployment
 
-Deployed with Vercel from the `main` branch.
+Automatically deployed with Vercel from the `main` branch.
