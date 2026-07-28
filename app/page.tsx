@@ -70,9 +70,21 @@ type MealDraft = {
 
 type FoodAnalysis = {
   confidence: "low" | "medium" | "high";
+  sourceType: "meal" | "package" | "nutrition_label" | "unknown";
+  servingLabel: string;
+  servingsInPackage: number;
+  perServing: NutritionNumbers;
+  wholePackage: NutritionNumbers;
   caloriesLow: number;
   caloriesHigh: number;
   assumptions: string[];
+};
+
+type NutritionNumbers = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
 };
 
 type SpeechRecognitionLike = {
@@ -157,6 +169,16 @@ function safeNumber(value: string) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+function draftFromNutrition(name: string, nutrition: NutritionNumbers): MealDraft {
+  return {
+    name,
+    calories: String(Math.max(0, Math.round(nutrition.calories))),
+    protein: String(Math.max(0, Math.round(nutrition.protein))),
+    carbs: String(Math.max(0, Math.round(nutrition.carbs))),
+    fat: String(Math.max(0, Math.round(nutrition.fat))),
+  };
+}
+
 function parseVoiceMeal(transcript: string): MealDraft {
   const find = (...patterns: RegExp[]) => {
     for (const pattern of patterns) {
@@ -194,9 +216,9 @@ function formatDay(dateKey: string) {
 
 export default function Dashboard() {
   const photoInputRef = useRef<HTMLInputElement>(null);
-  const todayKey = localDateKey();
   const [store, setStore] = useState<TrackerStore>(DEFAULT_STORE);
   const [ready, setReady] = useState(false);
+  const [currentDate, setCurrentDate] = useState<Date | null>(null);
   const [active, setActive] = useState("Today");
   const [mealModal, setMealModal] = useState(false);
   const [weightModal, setWeightModal] = useState(false);
@@ -212,9 +234,11 @@ export default function Dashboard() {
   const [photoAnalysis, setPhotoAnalysis] = useState<FoodAnalysis | null>(null);
   const [analyzingPhoto, setAnalyzingPhoto] = useState(false);
   const [mealEntryMode, setMealEntryMode] = useState<"photo" | "manual">("manual");
+  const [portionChoice, setPortionChoice] = useState<"serving" | "half" | "whole">("serving");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
   useEffect(() => {
+    setCurrentDate(new Date());
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -248,7 +272,12 @@ export default function Dashboard() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
   }, [ready, store]);
 
+  const todayKey = currentDate ? localDateKey(currentDate) : "";
   const today = store.days[todayKey] ?? { water: 0, meals: [] };
+  const yesterdayDate = currentDate ? new Date(currentDate) : null;
+  yesterdayDate?.setDate(yesterdayDate.getDate() - 1);
+  const yesterdayKey = yesterdayDate ? localDateKey(yesterdayDate) : "";
+  const yesterday = store.days[yesterdayKey] ?? { water: 0, meals: [] };
 
   const totals = useMemo(
     () =>
@@ -265,6 +294,9 @@ export default function Dashboard() {
   );
 
   const remaining = Math.max(0, store.goals.calories - totals.calories);
+  const yesterdayCalories = yesterday.meals.reduce((sum, meal) => sum + meal.calories, 0);
+  const proposedMealCalories = safeNumber(mealDraft.calories);
+  const remainingAfterProposedMeal = store.goals.calories - totals.calories - proposedMealCalories;
   const calorieProgress = Math.min(100, (totals.calories / store.goals.calories) * 100);
   const latestWeight = store.weights.at(-1)?.value;
   const previousWeight = store.weights.at(-2)?.value;
@@ -324,6 +356,7 @@ export default function Dashboard() {
     setPhotoPreview("");
     setPhotoStatus("");
     setPhotoAnalysis(null);
+    setPortionChoice("serving");
     setMealModal(false);
   };
 
@@ -389,6 +422,7 @@ export default function Dashboard() {
     setPhotoAnalysis(null);
     setAnalyzingPhoto(false);
     setMealEntryMode("manual");
+    setPortionChoice("serving");
   };
 
   const openPhotoPicker = () => {
@@ -404,6 +438,7 @@ export default function Dashboard() {
     setMealDraft(EMPTY_MEAL);
     setVoiceStatus("");
     setPhotoAnalysis(null);
+    setPortionChoice("serving");
     setPhotoStatus("Preparing your photo…");
     setAnalyzingPhoto(true);
     setMealModal(true);
@@ -427,25 +462,55 @@ export default function Dashboard() {
         );
       }
 
-      setMealDraft({
-        name: result.name,
-        calories: String(result.calories),
-        protein: String(result.protein),
-        carbs: String(result.carbs),
-        fat: String(result.fat),
-      });
-      setPhotoAnalysis({
+      const analysis: FoodAnalysis = {
         confidence: result.confidence,
+        sourceType: result.sourceType,
+        servingLabel: result.servingLabel,
+        servingsInPackage: result.servingsInPackage,
+        perServing: {
+          calories: result.calories,
+          protein: result.protein,
+          carbs: result.carbs,
+          fat: result.fat,
+        },
+        wholePackage: {
+          calories: result.packageCalories,
+          protein: result.packageProtein,
+          carbs: result.packageCarbs,
+          fat: result.packageFat,
+        },
         caloriesLow: result.caloriesLow,
         caloriesHigh: result.caloriesHigh,
         assumptions: result.assumptions,
-      });
+      };
+      setMealDraft(draftFromNutrition(result.name, analysis.perServing));
+      setPhotoAnalysis(analysis);
+      setPortionChoice("serving");
       setPhotoStatus("Estimate ready — check it, then save.");
     } catch (error) {
       setPhotoStatus(error instanceof Error ? error.message : "We could not analyse that photo.");
     } finally {
       setAnalyzingPhoto(false);
     }
+  };
+
+  const choosePackagePortion = (choice: "serving" | "half" | "whole") => {
+    if (!photoAnalysis) return;
+
+    let nutrition = photoAnalysis.perServing;
+    if (choice === "half") {
+      nutrition = {
+        calories: photoAnalysis.wholePackage.calories / 2,
+        protein: photoAnalysis.wholePackage.protein / 2,
+        carbs: photoAnalysis.wholePackage.carbs / 2,
+        fat: photoAnalysis.wholePackage.fat / 2,
+      };
+    } else if (choice === "whole") {
+      nutrition = photoAnalysis.wholePackage;
+    }
+
+    setPortionChoice(choice);
+    setMealDraft((draft) => draftFromNutrition(draft.name, nutrition));
   };
 
   const installApp = async () => {
@@ -465,6 +530,7 @@ export default function Dashboard() {
     setPhotoPreview("");
     setPhotoStatus("");
     setPhotoAnalysis(null);
+    setPortionChoice("serving");
     setMealModal(true);
   };
 
@@ -477,6 +543,15 @@ export default function Dashboard() {
     }))
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, 7);
+
+  if (!ready || !currentDate) {
+    return (
+      <main className="app-loading" aria-label="Loading Forma">
+        <span className="brand-mark"><Sparkles size={18} /></span>
+        <strong>forma</strong>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -532,7 +607,7 @@ export default function Dashboard() {
                     weekday: "long",
                     day: "numeric",
                     month: "long",
-                  }).format(new Date()).toUpperCase()}
+                  }).format(currentDate).toUpperCase()}
                 </p>
                 <h1>Good afternoon, Nima.</h1>
                 <p className="subtitle">Snap your meal. Check the estimate. Done.</p>
@@ -545,12 +620,12 @@ export default function Dashboard() {
                 <div className="meal-icon"><ScanLine size={32} /><Camera size={25} /></div>
                 <div>
                   <span className="quick-label">FAST FOOD LOG</span>
-                  <h2>Take a photo of your meal</h2>
-                  <p>Forma estimates the food, portion, calories and macros. You only check and save.</p>
+                  <h2>Take a photo of food or the package</h2>
+                  <p>Forma reads a meal, biscuit box or nutrition label, then works out the likely calories.</p>
                 </div>
                 <div className="hero-buttons">
                   <button className="camera-button" onClick={openPhotoPicker}>
-                    <Camera size={20} /> Take food photo
+                    <Camera size={20} /> Scan food or package
                   </button>
                   <button className="secondary-hero-button" onClick={() => openMeal()}>
                     <Mic size={18} /> Use voice instead
@@ -566,6 +641,34 @@ export default function Dashboard() {
                 <div className="budget-bar"><span style={{ width: `${calorieProgress}%` }} /></div>
                 <div className="bar-labels"><span>0</span><span>Daily target · {store.goals.calories.toLocaleString()}</span></div>
               </div>
+            </section>
+
+            <section className="day-review-card">
+              <div className="day-review-heading">
+                <div>
+                  <span>DAY-BY-DAY CHECK</span>
+                  <h2>Yesterday and today</h2>
+                </div>
+                <TrendingDown size={20} />
+              </div>
+              <div className="day-review-numbers">
+                <div>
+                  <span>YESTERDAY</span>
+                  <strong>{Math.round(yesterdayCalories)}</strong>
+                  <small>kcal · {yesterday.meals.length} {yesterday.meals.length === 1 ? "meal" : "meals"}</small>
+                </div>
+                <div className="day-review-divider">→</div>
+                <div className="today-number">
+                  <span>TODAY SO FAR</span>
+                  <strong>{Math.round(totals.calories)}</strong>
+                  <small>kcal · {today.meals.length} {today.meals.length === 1 ? "meal" : "meals"}</small>
+                </div>
+              </div>
+              <p>
+                {yesterday.meals.length
+                  ? `Yesterday you logged ${Math.round(yesterdayCalories)} kcal. Today you have logged ${Math.round(totals.calories)} kcal and have about ${Math.round(remaining)} kcal remaining.`
+                  : `There is no food record for yesterday yet. Today you have logged ${Math.round(totals.calories)} kcal and have about ${Math.round(remaining)} kcal remaining.`}
+              </p>
             </section>
 
             <div className="section-heading">
@@ -655,7 +758,7 @@ export default function Dashboard() {
                   <span>TODAY’S MEALS</span>
                   <h2>{today.meals.length ? `${today.meals.length} ${today.meals.length === 1 ? "entry" : "entries"}` : "Nothing logged yet"}</h2>
                 </div>
-                <button onClick={openPhotoPicker}><Camera size={16} /> Snap meal</button>
+                <button onClick={openPhotoPicker}><Camera size={16} /> Scan food</button>
               </div>
               {today.meals.length ? (
                 <div className="meal-rows">
@@ -676,8 +779,8 @@ export default function Dashboard() {
               ) : (
                 <div className="empty-meals">
                   <Camera size={25} />
-                  <p>Your first meal takes one photo and one confirmation.</p>
-                  <button onClick={openPhotoPicker}>Take the first photo</button>
+                  <p>Photograph the food, package, or nutrition label. Confirm once and it is logged.</p>
+                  <button onClick={openPhotoPicker}>Scan your first food</button>
                 </div>
               )}
             </section>
@@ -767,14 +870,14 @@ export default function Dashboard() {
       <nav className="mobile-nav">
         {[
           { n: "Today", i: Home },
-          { n: "Snap meal", i: Camera },
+          { n: "Scan food", i: Camera },
           { n: "Progress", i: TrendingDown },
           { n: "Coach", i: MessageCircle },
         ].map(({ n, i: Icon }) => (
           <button
             key={n}
-            className={(n === active || (n === "Snap meal" && mealModal)) ? "active" : ""}
-            onClick={() => n === "Snap meal" ? openPhotoPicker() : setActive(n)}
+            className={(n === active || (n === "Scan food" && mealModal)) ? "active" : ""}
+            onClick={() => n === "Scan food" ? openPhotoPicker() : setActive(n)}
           >
             <Icon size={20} /><span>{n}</span>
           </button>
@@ -817,7 +920,11 @@ export default function Dashboard() {
                   <div className="estimate-card">
                     <div className="estimate-heading">
                       <div>
-                        <span>FORMA ESTIMATE</span>
+                        <span>
+                          {photoAnalysis.sourceType === "package" || photoAnalysis.sourceType === "nutrition_label"
+                            ? "PACKAGED FOOD"
+                            : "FORMA ESTIMATE"}
+                        </span>
                         <h3>{mealDraft.name}</h3>
                       </div>
                       <span className={`confidence ${photoAnalysis.confidence}`}>
@@ -827,16 +934,65 @@ export default function Dashboard() {
                     <div className="estimate-calories">
                       <strong>{mealDraft.calories}</strong>
                       <span>kcal</span>
-                      <small>likely {photoAnalysis.caloriesLow}–{photoAnalysis.caloriesHigh}</small>
+                      <small>
+                        {portionChoice === "serving"
+                          ? `likely ${photoAnalysis.caloriesLow}–${photoAnalysis.caloriesHigh}`
+                          : "selected amount"}
+                      </small>
                     </div>
                     <div className="estimate-macros">
                       <span><b>{mealDraft.protein}g</b> protein</span>
                       <span><b>{mealDraft.carbs}g</b> carbs</span>
                       <span><b>{mealDraft.fat}g</b> fat</span>
                     </div>
+                    <div className="serving-line">
+                      <span>{portionChoice === "serving" ? photoAnalysis.servingLabel : portionChoice === "half" ? "Half the package" : "Whole package"}</span>
+                      {(photoAnalysis.sourceType === "package" || photoAnalysis.sourceType === "nutrition_label") && (
+                        <small>{photoAnalysis.servingsInPackage.toFixed(photoAnalysis.servingsInPackage % 1 ? 1 : 0)} servings in pack</small>
+                      )}
+                    </div>
                     {photoAnalysis.assumptions.length > 0 && (
                       <p>{photoAnalysis.assumptions.slice(0, 2).join(" · ")}</p>
                     )}
+                  </div>
+                )}
+
+                {photoAnalysis &&
+                  (photoAnalysis.sourceType === "package" || photoAnalysis.sourceType === "nutrition_label") &&
+                  photoAnalysis.servingsInPackage > 1 && (
+                    <div className="portion-selector">
+                      <span>How much are you thinking of eating?</span>
+                      <div>
+                        <button
+                          type="button"
+                          className={portionChoice === "serving" ? "active" : ""}
+                          onClick={() => choosePackagePortion("serving")}
+                        >
+                          One serving
+                        </button>
+                        <button
+                          type="button"
+                          className={portionChoice === "half" ? "active" : ""}
+                          onClick={() => choosePackagePortion("half")}
+                        >
+                          Half pack
+                        </button>
+                        <button
+                          type="button"
+                          className={portionChoice === "whole" ? "active" : ""}
+                          onClick={() => choosePackagePortion("whole")}
+                        >
+                          Whole pack
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                {photoAnalysis && (
+                  <div className={`meal-impact ${remainingAfterProposedMeal < 0 ? "over" : ""}`}>
+                    {remainingAfterProposedMeal >= 0
+                      ? `If you eat this, you will have about ${Math.round(remainingAfterProposedMeal)} kcal remaining today.`
+                      : `This amount is about ${Math.round(Math.abs(remainingAfterProposedMeal))} kcal over today’s target. You can still save it honestly.`}
                   </div>
                 )}
 

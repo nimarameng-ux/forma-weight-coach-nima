@@ -7,13 +7,20 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 const FoodEstimate = z.object({
+  sourceType: z.enum(["meal", "package", "nutrition_label", "unknown"]),
   name: z.string(),
+  servingLabel: z.string(),
+  servingsInPackage: z.number().nonnegative(),
   calories: z.number().int().nonnegative(),
   caloriesLow: z.number().int().nonnegative(),
   caloriesHigh: z.number().int().nonnegative(),
   protein: z.number().int().nonnegative(),
   carbs: z.number().int().nonnegative(),
   fat: z.number().int().nonnegative(),
+  packageCalories: z.number().int().nonnegative(),
+  packageProtein: z.number().int().nonnegative(),
+  packageCarbs: z.number().int().nonnegative(),
+  packageFat: z.number().int().nonnegative(),
   confidence: z.enum(["low", "medium", "high"]),
   assumptions: z.array(z.string()),
 });
@@ -55,11 +62,24 @@ export async function POST(request: Request) {
           content: [
             {
               type: "input_text",
-              text: `Estimate the nutrition for the entire visible meal.
+              text: `Analyse this as either a prepared meal, packaged food, or a nutrition label.
 
-Return a short everyday meal name, a single practical calorie estimate, a realistic low-to-high calorie range, and estimated grams of protein, carbohydrates, and fat.
+First classify sourceType as meal, package, nutrition_label, or unknown.
 
-Judge visible portion sizes carefully. Account for likely cooking oil or sauce only when visually reasonable. Do not invent a brand, exact ingredients, or an exact weight that the image cannot establish. If the image is unclear, incomplete, or not food, use low confidence and explain the main uncertainty in assumptions.
+For a prepared meal:
+- Estimate nutrition for the entire visible meal.
+- servingLabel should be "visible meal", servingsInPackage should be 1, and package totals should equal the meal totals.
+
+For packaged food or a nutrition label:
+- Read the product name, serving size, servings per package, calories, and macros from visible packaging whenever legible.
+- The main calories/protein/carbs/fat fields must describe ONE labelled serving.
+- packageCalories/packageProtein/packageCarbs/packageFat must describe the WHOLE package.
+- servingLabel should be short, such as "4 biscuits (30g)".
+- If only the front is visible and nutrition facts are not readable, make a cautious estimate, use low confidence, and say that the nutrition label would improve accuracy.
+
+Return a short everyday name, a practical calorie estimate, a realistic low-to-high calorie range for the default one-serving or visible-meal amount, and grams of protein, carbohydrates, and fat.
+
+Judge portion sizes carefully. Account for likely cooking oil or sauce only when visually reasonable. Do not invent a brand, exact ingredients, or an exact weight that the image cannot establish. If the image is unclear or not food, use low confidence and explain the main uncertainty.
 
 Keep assumptions short and useful. The point estimate must sit between caloriesLow and caloriesHigh. This is general tracking guidance, not a medical measurement.`,
             },
@@ -84,8 +104,31 @@ Keep assumptions short and useful. The point estimate must sit between caloriesL
     }
 
     const estimate = response.output_parsed;
+    const servingsInPackage = Math.max(1, estimate.servingsInPackage || 1);
+    const packageCalories = Math.max(
+      estimate.calories,
+      estimate.packageCalories || estimate.calories * servingsInPackage,
+    );
+    const packageProtein = Math.max(
+      estimate.protein,
+      estimate.packageProtein || estimate.protein * servingsInPackage,
+    );
+    const packageCarbs = Math.max(
+      estimate.carbs,
+      estimate.packageCarbs || estimate.carbs * servingsInPackage,
+    );
+    const packageFat = Math.max(
+      estimate.fat,
+      estimate.packageFat || estimate.fat * servingsInPackage,
+    );
+
     return NextResponse.json({
       ...estimate,
+      servingsInPackage,
+      packageCalories,
+      packageProtein,
+      packageCarbs,
+      packageFat,
       caloriesLow: Math.min(estimate.caloriesLow, estimate.calories),
       caloriesHigh: Math.max(estimate.caloriesHigh, estimate.calories),
       assumptions: estimate.assumptions.slice(0, 4),

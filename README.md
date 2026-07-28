@@ -5,8 +5,11 @@ A calm, photo-first personal tracker designed to make food logging take seconds 
 ## Current capabilities
 
 - Installable web app with custom phone icons and offline shell
-- Camera-first food logging with AI calorie and macro estimates
+- One camera scan for a prepared meal, food package, or nutrition label
+- AI calorie and macro estimates before saving
+- One-serving, half-package, and whole-package portion choices
 - One-tap confirmation with optional corrections
+- Plain-language yesterday-versus-today review
 - Browser voice entry with manual confirmation
 - Water and weight tracking
 - Editable daily goals
