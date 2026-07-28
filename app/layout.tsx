@@ -8,7 +8,7 @@ const manrope = Manrope({ subsets: ["latin"], variable: "--font-manrope" });
 export const metadata: Metadata = {
   metadataBase: new URL("https://forma-weight-coach-nima.vercel.app"),
   title: "Forma — AI Weight Coach",
-  description: "A calm, private tracker for meals, water, weight and daily progress.",
+  description: "Snap a food photo, check the calorie estimate, and save your meal in seconds.",
   applicationName: "Forma",
   appleWebApp: {
     capable: true,
@@ -27,17 +27,17 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "Forma — AI Weight Coach",
-    description: "Track today. Choose clearly.",
+    description: "Snap your meal. Check the estimate. Done.",
     url: "/",
     siteName: "Forma",
     type: "website",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Forma weight tracker dashboard" }],
+    images: [{ url: "/og-photo.png", width: 1200, height: 630, alt: "Forma photo-first food tracker" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "Forma — AI Weight Coach",
-    description: "Track today. Choose clearly.",
-    images: ["/og.png"],
+    description: "Snap your meal. Check the estimate. Done.",
+    images: ["/og-photo.png"],
   },
 };
 

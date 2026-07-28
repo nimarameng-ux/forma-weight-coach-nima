@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bell,
   Camera,
@@ -68,6 +68,13 @@ type MealDraft = {
   fat: string;
 };
 
+type FoodAnalysis = {
+  confidence: "low" | "medium" | "high";
+  caloriesLow: number;
+  caloriesHigh: number;
+  assumptions: string[];
+};
+
 type SpeechRecognitionLike = {
   continuous: boolean;
   interimResults: boolean;
@@ -110,6 +117,33 @@ const DEFAULT_STORE: TrackerStore = {
   days: {},
   weights: [],
 };
+
+function resizeFoodPhoto(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("We could not read that photo."));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("Please choose a clear food photo."));
+      image.onload = () => {
+        const maxSide = 1440;
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          reject(new Error("This browser could not prepare the photo."));
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      image.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function localDateKey(date = new Date()) {
   const year = date.getFullYear();
@@ -159,6 +193,7 @@ function formatDay(dateKey: string) {
 }
 
 export default function Dashboard() {
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const todayKey = localDateKey();
   const [store, setStore] = useState<TrackerStore>(DEFAULT_STORE);
   const [ready, setReady] = useState(false);
@@ -172,6 +207,11 @@ export default function Dashboard() {
   const [weightDraft, setWeightDraft] = useState("");
   const [goalDraft, setGoalDraft] = useState<Goals>(DEFAULT_STORE.goals);
   const [voiceStatus, setVoiceStatus] = useState("");
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [photoStatus, setPhotoStatus] = useState("");
+  const [photoAnalysis, setPhotoAnalysis] = useState<FoodAnalysis | null>(null);
+  const [analyzingPhoto, setAnalyzingPhoto] = useState(false);
+  const [mealEntryMode, setMealEntryMode] = useState<"photo" | "manual">("manual");
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
   useEffect(() => {
@@ -281,6 +321,9 @@ export default function Dashboard() {
     updateToday((day) => ({ ...day, meals: [...day.meals, meal] }));
     setMealDraft(EMPTY_MEAL);
     setVoiceStatus("");
+    setPhotoPreview("");
+    setPhotoStatus("");
+    setPhotoAnalysis(null);
     setMealModal(false);
   };
 
@@ -337,6 +380,74 @@ export default function Dashboard() {
     recognition.start();
   };
 
+  const closeMeal = () => {
+    setMealModal(false);
+    setMealDraft(EMPTY_MEAL);
+    setVoiceStatus("");
+    setPhotoPreview("");
+    setPhotoStatus("");
+    setPhotoAnalysis(null);
+    setAnalyzingPhoto(false);
+    setMealEntryMode("manual");
+  };
+
+  const openPhotoPicker = () => {
+    photoInputRef.current?.click();
+  };
+
+  const analyzeFoodPhoto = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setMealEntryMode("photo");
+    setMealDraft(EMPTY_MEAL);
+    setVoiceStatus("");
+    setPhotoAnalysis(null);
+    setPhotoStatus("Preparing your photo…");
+    setAnalyzingPhoto(true);
+    setMealModal(true);
+
+    try {
+      const image = await resizeFoodPhoto(file);
+      setPhotoPreview(image);
+      setPhotoStatus("Estimating the meal and portion…");
+
+      const response = await fetch("/api/analyze-food", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          result?.code === "AI_SETUP_REQUIRED"
+            ? "Photo analysis needs the AI connection to be activated."
+            : result?.error || "We could not analyse that photo.",
+        );
+      }
+
+      setMealDraft({
+        name: result.name,
+        calories: String(result.calories),
+        protein: String(result.protein),
+        carbs: String(result.carbs),
+        fat: String(result.fat),
+      });
+      setPhotoAnalysis({
+        confidence: result.confidence,
+        caloriesLow: result.caloriesLow,
+        caloriesHigh: result.caloriesHigh,
+        assumptions: result.assumptions,
+      });
+      setPhotoStatus("Estimate ready — check it, then save.");
+    } catch (error) {
+      setPhotoStatus(error instanceof Error ? error.message : "We could not analyse that photo.");
+    } finally {
+      setAnalyzingPhoto(false);
+    }
+  };
+
   const installApp = async () => {
     if (!installPrompt) {
       setInstallHelp(true);
@@ -348,8 +459,12 @@ export default function Dashboard() {
   };
 
   const openMeal = (starter = "") => {
+    setMealEntryMode("manual");
     setMealDraft({ ...EMPTY_MEAL, name: starter });
     setVoiceStatus("");
+    setPhotoPreview("");
+    setPhotoStatus("");
+    setPhotoAnalysis(null);
     setMealModal(true);
   };
 
@@ -365,6 +480,15 @@ export default function Dashboard() {
 
   return (
     <main className="app-shell">
+      <input
+        ref={photoInputRef}
+        className="photo-input"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={analyzeFoodPhoto}
+        aria-label="Take or choose a food photo"
+      />
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark"><Sparkles size={18} /></span>
@@ -395,7 +519,7 @@ export default function Dashboard() {
       <section className="content">
         <div className="privacy-strip">
           <Check size={14} />
-          <span>Private preview · your entries are saved on this device</span>
+          <span>Meals stay on this device · photos are not saved in your history</span>
           <button onClick={installApp}><Download size={14} /> Install on phone</button>
         </div>
 
@@ -411,12 +535,29 @@ export default function Dashboard() {
                   }).format(new Date()).toUpperCase()}
                 </p>
                 <h1>Good afternoon, Nima.</h1>
-                <p className="subtitle">Make the next choice clear, then carry on with your day.</p>
+                <p className="subtitle">Snap your meal. Check the estimate. Done.</p>
               </div>
               <button className="icon-button" aria-label="Notifications"><Bell size={20} /></button>
             </header>
 
             <section className="hero-card">
+              <div className="hero-action">
+                <div className="meal-icon"><ScanLine size={32} /><Camera size={25} /></div>
+                <div>
+                  <span className="quick-label">FAST FOOD LOG</span>
+                  <h2>Take a photo of your meal</h2>
+                  <p>Forma estimates the food, portion, calories and macros. You only check and save.</p>
+                </div>
+                <div className="hero-buttons">
+                  <button className="camera-button" onClick={openPhotoPicker}>
+                    <Camera size={20} /> Take food photo
+                  </button>
+                  <button className="secondary-hero-button" onClick={() => openMeal()}>
+                    <Mic size={18} /> Use voice instead
+                  </button>
+                </div>
+                <small>Estimates are approximate. Hidden oils and exact portion weight may change the result.</small>
+              </div>
               <div className="hero-copy">
                 <span className="status-pill"><span /> {totals.calories <= store.goals.calories ? "ON TRACK" : "OVER TARGET"}</span>
                 <p>Your remaining budget</p>
@@ -424,19 +565,6 @@ export default function Dashboard() {
                 <p className="after">after {Math.round(totals.calories).toLocaleString()} kcal logged</p>
                 <div className="budget-bar"><span style={{ width: `${calorieProgress}%` }} /></div>
                 <div className="bar-labels"><span>0</span><span>Daily target · {store.goals.calories.toLocaleString()}</span></div>
-              </div>
-              <div className="hero-action">
-                <div className="meal-icon"><ScanLine size={32} /><Utensils size={24} /></div>
-                <div>
-                  <h2>What did you eat?</h2>
-                  <p>Speak or type your meal, check the estimate, then save it to today.</p>
-                </div>
-                <div className="hero-buttons">
-                  <button onClick={() => openMeal()}><Mic size={19} /> Speak or type</button>
-                  <button className="secondary-hero-button" onClick={() => openMeal()}>
-                    <Camera size={18} /> Photo coming next
-                  </button>
-                </div>
               </div>
             </section>
 
@@ -527,7 +655,7 @@ export default function Dashboard() {
                   <span>TODAY’S MEALS</span>
                   <h2>{today.meals.length ? `${today.meals.length} ${today.meals.length === 1 ? "entry" : "entries"}` : "Nothing logged yet"}</h2>
                 </div>
-                <button onClick={() => openMeal()}><Plus size={16} /> Add meal</button>
+                <button onClick={openPhotoPicker}><Camera size={16} /> Snap meal</button>
               </div>
               {today.meals.length ? (
                 <div className="meal-rows">
@@ -547,9 +675,9 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="empty-meals">
-                  <Mic size={23} />
-                  <p>Say “chicken salad, 520 calories, 40 grams protein” to fill the form faster.</p>
-                  <button onClick={() => openMeal()}>Log the first meal</button>
+                  <Camera size={25} />
+                  <p>Your first meal takes one photo and one confirmation.</p>
+                  <button onClick={openPhotoPicker}>Take the first photo</button>
                 </div>
               )}
             </section>
@@ -565,7 +693,7 @@ export default function Dashboard() {
                     : "You have reached today’s target. Pause, hydrate, and choose based on hunger rather than the number."}
                 </p>
               </div>
-              <button onClick={() => openMeal("Dinner")}><Plus size={18} /> Log dinner</button>
+              <button onClick={openPhotoPicker}><Camera size={18} /> Snap dinner</button>
             </section>
 
             <section className="coach-row">
@@ -628,7 +756,7 @@ export default function Dashboard() {
                   : "Once you log a meal, your daily budget and coach guidance will adapt to the real numbers."}
               </p>
               <div className="coach-actions">
-                <button onClick={() => openMeal()}><Mic size={17} /> Log by voice</button>
+                <button onClick={openPhotoPicker}><Camera size={17} /> Log by photo</button>
                 <button onClick={() => setCraving(true)}>Help with a craving</button>
               </div>
             </div>
@@ -639,14 +767,14 @@ export default function Dashboard() {
       <nav className="mobile-nav">
         {[
           { n: "Today", i: Home },
-          { n: "Add meal", i: Plus },
+          { n: "Snap meal", i: Camera },
           { n: "Progress", i: TrendingDown },
           { n: "Coach", i: MessageCircle },
         ].map(({ n, i: Icon }) => (
           <button
             key={n}
-            className={(n === active || (n === "Add meal" && mealModal)) ? "active" : ""}
-            onClick={() => n === "Add meal" ? openMeal() : setActive(n)}
+            className={(n === active || (n === "Snap meal" && mealModal)) ? "active" : ""}
+            onClick={() => n === "Snap meal" ? openPhotoPicker() : setActive(n)}
           >
             <Icon size={20} /><span>{n}</span>
           </button>
@@ -654,34 +782,118 @@ export default function Dashboard() {
       </nav>
 
       {mealModal && (
-        <div className="modal-backdrop" onClick={() => setMealModal(false)}>
-          <form className="modal form-modal" onSubmit={addMeal} onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="close" onClick={() => setMealModal(false)} aria-label="Close meal form"><X size={20} /></button>
-            <span className="modal-icon"><Utensils size={21} /></span>
-            <p>LOG A MEAL</p>
-            <h2>What did you eat?</h2>
-            <span>Speak or type, then check every number before saving.</span>
-            <button type="button" className="voice-button" onClick={startVoiceEntry}>
-              <Mic size={18} /> Speak meal details
-            </button>
-            {voiceStatus && <div className="form-note">{voiceStatus}</div>}
-            <label>
-              Meal description
-              <textarea
-                value={mealDraft.name}
-                onChange={(event) => setMealDraft((draft) => ({ ...draft, name: event.target.value }))}
-                placeholder="e.g. Chicken salad with avocado"
-                required
-              />
-            </label>
-            <div className="form-grid">
-              <label>Calories<input inputMode="decimal" type="number" min="0" value={mealDraft.calories} onChange={(event) => setMealDraft((draft) => ({ ...draft, calories: event.target.value }))} required /></label>
-              <label>Protein (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.protein} onChange={(event) => setMealDraft((draft) => ({ ...draft, protein: event.target.value }))} /></label>
-              <label>Carbs (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.carbs} onChange={(event) => setMealDraft((draft) => ({ ...draft, carbs: event.target.value }))} /></label>
-              <label>Fat (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.fat} onChange={(event) => setMealDraft((draft) => ({ ...draft, fat: event.target.value }))} /></label>
+        <div className="modal-backdrop" onClick={closeMeal}>
+          <form className="modal form-modal meal-capture-modal" onSubmit={addMeal} onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="close" onClick={closeMeal} aria-label="Close meal form"><X size={20} /></button>
+            <span className="modal-icon">{mealEntryMode === "photo" ? <Camera size={21} /> : <Utensils size={21} />}</span>
+            <p>{mealEntryMode === "photo" ? "PHOTO FOOD LOG" : "QUICK MANUAL LOG"}</p>
+            <h2>{mealEntryMode === "photo" ? "Check the estimate" : "Tell Forma what you ate"}</h2>
+            <span>
+              {mealEntryMode === "photo"
+                ? "One confirmation saves the meal."
+                : "Use voice for the fastest manual entry."}
+            </span>
+
+            {mealEntryMode === "photo" && (
+              <>
+                {photoPreview ? (
+                  <div className="food-photo-preview">
+                    {/* The selected photo is intentionally not written to meal history. */}
+                    <img src={photoPreview} alt="Selected meal" />
+                    {analyzingPhoto && <div className="photo-scanning"><ScanLine size={27} /><span>Analysing…</span></div>}
+                  </div>
+                ) : (
+                  <div className="food-photo-placeholder"><Camera size={28} /></div>
+                )}
+
+                {photoStatus && (
+                  <div className={`photo-status ${analyzingPhoto ? "working" : ""}`}>
+                    {analyzingPhoto && <span className="status-spinner" />}
+                    {photoStatus}
+                  </div>
+                )}
+
+                {photoAnalysis && (
+                  <div className="estimate-card">
+                    <div className="estimate-heading">
+                      <div>
+                        <span>FORMA ESTIMATE</span>
+                        <h3>{mealDraft.name}</h3>
+                      </div>
+                      <span className={`confidence ${photoAnalysis.confidence}`}>
+                        {photoAnalysis.confidence} confidence
+                      </span>
+                    </div>
+                    <div className="estimate-calories">
+                      <strong>{mealDraft.calories}</strong>
+                      <span>kcal</span>
+                      <small>likely {photoAnalysis.caloriesLow}–{photoAnalysis.caloriesHigh}</small>
+                    </div>
+                    <div className="estimate-macros">
+                      <span><b>{mealDraft.protein}g</b> protein</span>
+                      <span><b>{mealDraft.carbs}g</b> carbs</span>
+                      <span><b>{mealDraft.fat}g</b> fat</span>
+                    </div>
+                    {photoAnalysis.assumptions.length > 0 && (
+                      <p>{photoAnalysis.assumptions.slice(0, 2).join(" · ")}</p>
+                    )}
+                  </div>
+                )}
+
+                {!analyzingPhoto && !photoAnalysis && (
+                  <div className="photo-retry">
+                    <button type="button" onClick={openPhotoPicker}><Camera size={17} /> Try another photo</button>
+                    <button type="button" onClick={() => openMeal()}><Mic size={17} /> Use voice instead</button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {mealEntryMode === "manual" && (
+              <>
+                <button type="button" className="voice-button" onClick={startVoiceEntry}>
+                  <Mic size={18} /> Speak meal details
+                </button>
+                {voiceStatus && <div className="form-note">{voiceStatus}</div>}
+              </>
+            )}
+
+            {(mealEntryMode === "manual" || photoAnalysis) && (
+              <details className="correction-fields" open={mealEntryMode === "manual"}>
+                <summary>{mealEntryMode === "photo" ? "Adjust the estimate" : "Meal details"}</summary>
+                <label>
+                  Meal description
+                  <textarea
+                    value={mealDraft.name}
+                    onChange={(event) => setMealDraft((draft) => ({ ...draft, name: event.target.value }))}
+                    placeholder="e.g. Chicken salad with avocado"
+                    required
+                  />
+                </label>
+                <div className="form-grid">
+                  <label>Calories<input inputMode="decimal" type="number" min="0" value={mealDraft.calories} onChange={(event) => setMealDraft((draft) => ({ ...draft, calories: event.target.value }))} required /></label>
+                  <label>Protein (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.protein} onChange={(event) => setMealDraft((draft) => ({ ...draft, protein: event.target.value }))} /></label>
+                  <label>Carbs (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.carbs} onChange={(event) => setMealDraft((draft) => ({ ...draft, carbs: event.target.value }))} /></label>
+                  <label>Fat (g)<input inputMode="decimal" type="number" min="0" value={mealDraft.fat} onChange={(event) => setMealDraft((draft) => ({ ...draft, fat: event.target.value }))} /></label>
+                </div>
+              </details>
+            )}
+
+            <div className="form-warning">
+              Food-photo calories are estimates, not medical measurements. Sauces, oils and portion size can change the total.
             </div>
-            <div className="form-warning">Nutrition estimates are guidance only. Check portions before saving.</div>
-            <button className="submit-button" type="submit"><Check size={17} /> Save to today</button>
+            <button
+              className="submit-button"
+              type="submit"
+              disabled={analyzingPhoto || !mealDraft.name.trim() || !mealDraft.calories}
+            >
+              <Check size={17} /> {mealEntryMode === "photo" ? "Looks right — save meal" : "Save to today"}
+            </button>
+            {mealEntryMode === "photo" && photoAnalysis && (
+              <button className="take-another-button" type="button" onClick={openPhotoPicker}>
+                Retake photo
+              </button>
+            )}
           </form>
         </div>
       )}
